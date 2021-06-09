@@ -14,14 +14,16 @@
 #define VIM_SALT_LEN 8
 #define VIM_SEED_LEN 16
 #define VIM_NONCE_LEN 24
+#undef VIM_NONCE_LEN
+#define VIM_SOD_HEADER_LEN crypto_secretstream_xchacha20poly1305_HEADERBYTES // should be 24
 #define VIM_KEY_LEN 32
 
 struct VimHeader {
     unsigned char msg[VIM_HEADER_LEN];
     unsigned char salt[VIM_SALT_LEN];
     unsigned char seed[VIM_SEED_LEN];
-    unsigned char nonce[VIM_NONCE_LEN];
     unsigned char key[VIM_KEY_LEN];
+    unsigned char sod_header[VIM_SOD_HEADER_LEN];
   };
 
 

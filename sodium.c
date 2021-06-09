@@ -1,4 +1,4 @@
-#include "header.h"
+#include "sodium.h"
 
 void
 dump_hex_buf(char *prefix, unsigned char buf[], unsigned int len)
@@ -14,84 +14,81 @@ decrypt(char *file, unsigned char *key)
 {
   FILE *fd;
   int eof;
-  int len = 0;
+  unsigned int rlen = 0;
+  unsigned long total = 0;
+  unsigned long long out_len;
   int keylen;
   unsigned char buf[1000];
-  unsigned char decrypted[10000];
-  int err = 0;
-  int round = 0;
-  char vimheader[100] = "";
-  unsigned char *ptr;
-  size_t ciphertext_len;
+  unsigned char decrypted[1000];
   struct VimHeader header;
+  crypto_secretstream_xchacha20poly1305_state st;
+  unsigned char tag;
 
   fprintf(stdout, "Trying to decrypt file \"%s\" with key \"%s\"\n", file, key);
 
   if ((fd = fopen(file, "r")) == NULL)
   {
-    fprintf(stdout, "Error reading File %s\n", file);
+    fprintf(stdout, "Error 1 reading File %s\n", file);
     exit(1);
   }
-
-  do {
-    len += fread(buf, 1, sizeof(buf), fd);
-    eof = feof(fd);
-
-    if (round == 0 && len <= VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_NONCE_LEN)
-    {
-      err = 1;
-      break;
-    }
-    else if (round == 0)
-    {
-      memcpy(header.msg, buf, VIM_HEADER_LEN);
-      memcpy(header.salt, buf + VIM_HEADER_LEN, VIM_SALT_LEN);
-      memcpy(header.seed, buf + VIM_HEADER_LEN + VIM_SALT_LEN, VIM_SEED_LEN);
-      memcpy(header.nonce, buf + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, VIM_NONCE_LEN);
-    }
-
-    fprintf(stdout, "MSG: %.*s\n", VIM_HEADER_LEN,(char *)header.msg);
-
-    if (strcmp(VIM_HEADER, vimheader) == 0)
-      fprintf(stdout, "Vim Crypt Header version '%c' found\n", vimheader[10]);
-
-    dump_hex_buf("SALT: ", header.salt, VIM_SALT_LEN);
-    dump_hex_buf("SEED: ", header.seed, VIM_SEED_LEN);
-    dump_hex_buf("NONCE: ", header.nonce, VIM_NONCE_LEN);
-
-  } while (!eof);
-
-  fclose(fd);
-
-  if (err)
+  rlen = fread(buf, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN, fd);
+  if (rlen !=  VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN)
   {
-    fprintf(stdout, "Input File %s not long enough\n", file);
-    exit(err);
+    fprintf(stdout, "Error 1 reading File %s\n", file);
+    exit(1);
   }
+  total += rlen;
 
-  ciphertext_len = len - (VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_NONCE_LEN);
+  memcpy(header.msg, buf, VIM_HEADER_LEN);
+  memcpy(header.salt, buf + VIM_HEADER_LEN, VIM_SALT_LEN);
+  memcpy(header.seed, buf + VIM_HEADER_LEN + VIM_SALT_LEN, VIM_SEED_LEN);
+  memcpy(header.sod_header, buf + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, VIM_SOD_HEADER_LEN);
+
+  if (strncmp(VIM_HEADER, (char *)header.msg, VIM_HEADER_LEN) == 0)
+    fprintf(stdout, "Vim Crypt Header version '%c' found\n", header.msg[10]);
+  fprintf(stdout, "MSG: %.*s\n", VIM_HEADER_LEN,(char *)header.msg);
+  dump_hex_buf("SALT: ", header.salt, VIM_SALT_LEN);
+  dump_hex_buf("SEED: ", header.seed, VIM_SEED_LEN);
+
+  dump_hex_buf("SOD_H: ", header.sod_header, VIM_SOD_HEADER_LEN);
 
   keylen = strlen((char *)key);
   memcpy(key + keylen , header.salt, VIM_SALT_LEN);
   dump_hex_buf("Key: ", (unsigned char *)key, VIM_KEY_LEN);
-
-  fprintf(stdout, "%ld bytes actual data starts at offset %d\n",
-      ciphertext_len,
-      (VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_NONCE_LEN));
-
-  ptr = buf + (VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_NONCE_LEN);
-
-  if (crypto_secretbox_open_easy(decrypted, ptr, ciphertext_len, header.nonce, key) != 0) {
-    fprintf(stdout, "ERROR\n");
-    fprintf(stdout, "Could not decrypt Message!\n");
-    fprintf(stdout, "Message possibly forged!\n");
-  }
-  else
+  if (crypto_secretstream_xchacha20poly1305_init_pull(&st, header.sod_header, key) != 0)
   {
-    fprintf(stdout, "Secret:\n");
-    fprintf(stdout, "%s\n", decrypted);
+    // incomplete header
+    fprintf(stdout, "Incomplete Sodium Header\n");
+    exit(1);
   }
-   
+
+  fprintf(stdout, "%ld bytes read, actual data starts at offset %d\n",
+      total, (VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN));
+
+  do {
+    rlen = fread(buf, 1, sizeof(buf), fd);
+    eof = feof(fd);
+    total += rlen;
+
+		if (crypto_secretstream_xchacha20poly1305_pull(&st, decrypted, &out_len, &tag, buf, rlen, NULL, 0) != 0)
+    {
+        // corrupted Chunk
+        fprintf(stdout, "Corrupted Sodium Chunk\n");
+        exit(1);
+    }
+		if (tag == crypto_secretstream_xchacha20poly1305_TAG_FINAL && !eof)
+    {
+        fprintf(stdout, "Premature End of File :(\n");
+        exit(1);
+		}
+    fprintf(stdout, "Decrypted %d Bytes\n", rlen);
+    fprintf(stdout, "Start Decrypted Content\n");
+    fprintf(stdout, "\n====START DECRYPTED====\n");
+    fprintf(stdout, "%*s", (int)out_len, decrypted);
+  } while (!eof);
+
+  fclose(fd);
+  fprintf(stdout, "====END DECRYPTED====\n");
 
   return 0;
 }
@@ -112,20 +109,19 @@ print_help()
 void
 encrypt(char *source_file, unsigned char *key)
 {
-// #define CHUNK_SIZE 100
-    struct stat st_source;
-    unsigned char  *buf_in;
+#define CHUNK_SIZE 4096
+    unsigned char  buf_in[CHUNK_SIZE];
     char  *target_file;
-    unsigned char  vim_header[VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_NONCE_LEN];
-    //unsigned char  header[crypto_secretstream_xchacha20poly1305_HEADERBYTES];
-    //crypto_secretstream_xchacha20poly1305_state st;
-    //unsigned char ciphertext[CHUNK_SIZE + crypto_secretbox_MACBYTES];
-    unsigned char *ciphertext;
+    unsigned char  vim_header[VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN];
+    crypto_secretstream_xchacha20poly1305_state st;
+    unsigned char ciphertext[CHUNK_SIZE + crypto_secretbox_MACBYTES];
+    unsigned char tag;
     FILE          *fp_t, *fp_s;
     size_t         rlen;
     int            eof;
     struct VimHeader vheader;
     int keylen = strlen((char *)key);
+    unsigned long long out_len;
 
     size_t file_name_len = strlen(source_file);
     target_file = (char *)malloc(file_name_len + 4 + 1); // .enc + NUL byte
@@ -144,7 +140,6 @@ encrypt(char *source_file, unsigned char *key)
     memcpy(vheader.msg, VIM_HEADER, VIM_HEADER_LEN);
     randombytes_buf(vheader.salt, VIM_SALT_LEN);
     randombytes_buf(vheader.seed, VIM_SEED_LEN);
-    randombytes_buf(vheader.nonce, VIM_NONCE_LEN);
     memset(vheader.key, ' ', VIM_KEY_LEN);
     memcpy(vheader.key, key, keylen);
     if (keylen < VIM_KEY_LEN)
@@ -157,55 +152,33 @@ encrypt(char *source_file, unsigned char *key)
 
     dump_hex_buf("SALT: ", vheader.salt, VIM_SALT_LEN);
     dump_hex_buf("SEED: ", vheader.seed, VIM_SEED_LEN);
-    dump_hex_buf("NONCE: ", vheader.nonce, VIM_NONCE_LEN);
-    dump_hex_buf("Key: ", (unsigned char *)vheader.key, VIM_KEY_LEN);
 
     // fill vim_header buffer
     memcpy(vim_header, vheader.msg, VIM_HEADER_LEN);
     memcpy(vim_header + VIM_HEADER_LEN, vheader.salt, VIM_SALT_LEN);
     memcpy(vim_header + VIM_HEADER_LEN + VIM_SALT_LEN, vheader.seed, VIM_SEED_LEN);
-    memcpy(vim_header + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, vheader.nonce, VIM_NONCE_LEN);
-
-
-    if (stat(source_file, &st_source) != 0)
-    {
-      fprintf(stdout, "Error statting source file!\n");
-      exit(1);
-    }
-
-    if ((buf_in = malloc(st_source.st_size)) == NULL)
-    {
-      fprintf(stdout, "Error allocating source file buffer!\n");
-      exit(1);
-    }
-
-    if ((ciphertext = (unsigned char *)malloc(st_source.st_size + crypto_secretbox_MACBYTES)) == NULL)
-    {
-      fprintf(stdout, "Error allocating ciphertext buffer!\n");
-      exit(1);
-    }
 
     fp_s = fopen(source_file, "rb");
     fp_t = fopen(target_file, "wb");
-    //crypto_secretstream_xchacha20poly1305_init_push(&st, header, key);
-    fwrite(vim_header, 1, sizeof(vim_header), fp_t);
+    crypto_secretstream_xchacha20poly1305_init_push(&st, vheader.sod_header, vheader.key);
+    memcpy(vim_header + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, vheader.sod_header, VIM_SOD_HEADER_LEN);
+
+    dump_hex_buf("SOD_H: ", (unsigned char *)vheader.sod_header, VIM_SOD_HEADER_LEN);
+    dump_hex_buf("Key: ", (unsigned char *)vheader.key, VIM_KEY_LEN);
+    fwrite(vim_header, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN, fp_t);
 
     do {
-        rlen = fread(buf_in, 1, st_source.st_size, fp_s);
-        crypto_secretbox_easy(ciphertext, buf_in, rlen, vheader.nonce, key);
-        //tag = eof ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0;
-        //crypto_secretstream_xchacha20poly1305_push(&st, buf_out, &out_len, buf_in, rlen,
-         //                                          NULL, 0, tag);
-        fwrite(ciphertext, 1, (size_t) st_source.st_size + crypto_secretbox_MACBYTES, fp_t);
+        rlen = fread(buf_in, 1, CHUNK_SIZE, fp_s);
         eof = feof(fp_s);
+        tag = eof ? crypto_secretstream_xchacha20poly1305_TAG_FINAL : 0;
+        crypto_secretstream_xchacha20poly1305_push(&st, ciphertext, &out_len, buf_in, rlen,
+                                                  NULL, 0, tag);
+        fwrite(ciphertext, 1, (size_t)out_len, fp_t);
     } while (!eof);
-
 
     fclose(fp_t);
     fclose(fp_s);
     free(target_file);
-    free(ciphertext);
-    free(buf_in);
 }
 
 char *get_key()
@@ -270,8 +243,6 @@ main(int argc, char **argv)
   else if (doit == 2 && file[0] != NUL)
   {
     fprintf(stdout, "Decrypting %s\n", file);
-    //char *ptr = &key[0];
-    // dump_hex_buf("Key Hex: ", (unsigned char *)key, VIM_KEY_LEN);
     decrypt(file, (unsigned char *)key);
   }
   else
