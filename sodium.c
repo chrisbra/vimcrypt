@@ -123,7 +123,6 @@ encrypt(char *source_file, unsigned char *key)
 {
     unsigned char  buf_in[CHUNK_SIZE];
     char  *target_file;
-    unsigned char  vim_header[VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN];
     crypto_secretstream_xchacha20poly1305_state st;
     unsigned char ciphertext[CHUNK_SIZE + crypto_secretbox_MACBYTES];
     unsigned char tag;
@@ -161,15 +160,9 @@ encrypt(char *source_file, unsigned char *key)
         memcpy(vheader.key + keylen , vheader.salt, VIM_KEY_LEN - keylen);
     }
 
-    // fill vim_header buffer
-    memcpy(vim_header, vheader.msg, VIM_HEADER_LEN);
-    memcpy(vim_header + VIM_HEADER_LEN, vheader.salt, VIM_SALT_LEN);
-    memcpy(vim_header + VIM_HEADER_LEN + VIM_SALT_LEN, vheader.seed, VIM_SEED_LEN);
-
     fp_s = fopen(source_file, "rb");
     fp_t = fopen(target_file, "wb");
     crypto_secretstream_xchacha20poly1305_init_push(&st, vheader.sod_header, vheader.key);
-    memcpy(vim_header + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, vheader.sod_header, VIM_SOD_HEADER_LEN);
 
     if (verbose)
     {
@@ -178,7 +171,11 @@ encrypt(char *source_file, unsigned char *key)
       dump_hex_buf("SOD_H: ", (unsigned char *)vheader.sod_header, VIM_SOD_HEADER_LEN);
       dump_hex_buf("Key: ", (unsigned char *)vheader.key, VIM_KEY_LEN);
     }
-    fwrite(vim_header, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN, fp_t);
+    // Write Header
+    fwrite(vheader.msg, 1, VIM_HEADER_LEN, fp_t);
+    fwrite(vheader.salt, 1, VIM_SALT_LEN, fp_t);
+    fwrite(vheader.seed, 1, VIM_SEED_LEN, fp_t);
+    fwrite(vheader.sod_header, 1, VIM_SOD_HEADER_LEN, fp_t);
 
     do {
         rlen = fread(buf_in, 1, CHUNK_SIZE, fp_s);
