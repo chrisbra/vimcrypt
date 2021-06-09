@@ -9,6 +9,8 @@
 #define NUL 0x0
 #define UNUSED __attribute__((unused))
 
+#define CHUNK_SIZE 4096
+
 #define VIM_HEADER "VimCrypt~04!"
 #define VIM_HEADER_LEN 12
 #define VIM_SALT_LEN 8

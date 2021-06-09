@@ -1,5 +1,7 @@
 #include "sodium.h"
 
+static int verbose = 0;
+
 void
 dump_hex_buf(char *prefix, unsigned char buf[], unsigned int len)
 {
@@ -18,17 +20,17 @@ decrypt(char *file, unsigned char *key)
   unsigned long total = 0;
   unsigned long long out_len;
   int keylen;
-  unsigned char buf[1000];
-  unsigned char decrypted[1000];
+  unsigned char buf[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
+  unsigned char decrypted[CHUNK_SIZE];
   struct VimHeader header;
   crypto_secretstream_xchacha20poly1305_state st;
   unsigned char tag;
+  int cnt = 0;
 
-  fprintf(stdout, "Trying to decrypt file \"%s\" with key \"%s\"\n", file, key);
 
   if ((fd = fopen(file, "r")) == NULL)
   {
-    fprintf(stdout, "Error 1 reading File %s\n", file);
+    fprintf(stdout, "Error opening File \"%s\"\n", file);
     exit(1);
   }
   rlen = fread(buf, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN, fd);
@@ -44,17 +46,22 @@ decrypt(char *file, unsigned char *key)
   memcpy(header.seed, buf + VIM_HEADER_LEN + VIM_SALT_LEN, VIM_SEED_LEN);
   memcpy(header.sod_header, buf + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, VIM_SOD_HEADER_LEN);
 
-  if (strncmp(VIM_HEADER, (char *)header.msg, VIM_HEADER_LEN) == 0)
-    fprintf(stdout, "Vim Crypt Header version '%c' found\n", header.msg[10]);
-  fprintf(stdout, "MSG: %.*s\n", VIM_HEADER_LEN,(char *)header.msg);
-  dump_hex_buf("SALT: ", header.salt, VIM_SALT_LEN);
-  dump_hex_buf("SEED: ", header.seed, VIM_SEED_LEN);
-
-  dump_hex_buf("SOD_H: ", header.sod_header, VIM_SOD_HEADER_LEN);
-
   keylen = strlen((char *)key);
   memcpy(key + keylen , header.salt, VIM_SALT_LEN);
-  dump_hex_buf("Key: ", (unsigned char *)key, VIM_KEY_LEN);
+  if (verbose)
+  {
+    fprintf(stdout, "Trying to decrypt file \"%s\" with key \"%s\"\n", file, key);
+    if (strncmp(VIM_HEADER, (char *)header.msg, VIM_HEADER_LEN) == 0)
+      fprintf(stdout, "Vim Crypt Header version '%c' found\n", header.msg[10]);
+    fprintf(stdout, "MSG: %.*s\n", VIM_HEADER_LEN,(char *)header.msg);
+    dump_hex_buf("SALT: ", header.salt, VIM_SALT_LEN);
+    dump_hex_buf("SEED: ", header.seed, VIM_SEED_LEN);
+    dump_hex_buf("SOD_H: ", header.sod_header, VIM_SOD_HEADER_LEN);
+    dump_hex_buf("Key: ", (unsigned char *)key, VIM_KEY_LEN);
+    fprintf(stdout, "%ld bytes read, actual data starts at offset %d\n",
+      total, (VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN));
+  }
+
   if (crypto_secretstream_xchacha20poly1305_init_pull(&st, header.sod_header, key) != 0)
   {
     // incomplete header
@@ -62,13 +69,11 @@ decrypt(char *file, unsigned char *key)
     exit(1);
   }
 
-  fprintf(stdout, "%ld bytes read, actual data starts at offset %d\n",
-      total, (VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN));
-
   do {
     rlen = fread(buf, 1, sizeof(buf), fd);
     eof = feof(fd);
     total += rlen;
+    memset(decrypted, 0, CHUNK_SIZE);
 
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, decrypted, &out_len, &tag, buf, rlen, NULL, 0) != 0)
     {
@@ -81,14 +86,21 @@ decrypt(char *file, unsigned char *key)
         fprintf(stdout, "Premature End of File :(\n");
         exit(1);
 		}
-    fprintf(stdout, "Decrypted %d Bytes\n", rlen);
-    fprintf(stdout, "Start Decrypted Content\n");
-    fprintf(stdout, "\n====START DECRYPTED====\n");
-    fprintf(stdout, "%*s", (int)out_len, decrypted);
+    if (cnt == 0)
+    {
+      if (verbose)
+      {
+        fprintf(stdout, "Decrypted %d Bytes\n", rlen);
+        fprintf(stdout, "Start Decrypted Content\n");
+      }
+      fprintf(stdout, "==== START DECRYPTED ====\n");
+    }
+    fprintf(stdout, "%s", decrypted);
+    cnt++;
   } while (!eof);
 
   fclose(fd);
-  fprintf(stdout, "====END DECRYPTED====\n");
+  fprintf(stdout, "====  END  DECRYPTED ====\n");
 
   return 0;
 }
@@ -100,16 +112,16 @@ print_help()
   fprintf(stdout, "\nsodium\n");
   fprintf(stdout, "======\n");
   fprintf(stdout, "De- and Encrypting Vim Sodium encrypted files\n");
-  fprintf(stdout, "sodium encrypt|decrypt file\n");
+  fprintf(stdout, "sodium [-v] encrypt|decrypt file\n");
   fprintf(stdout, "\n");
   fprintf(stdout, "sodium encrypt file:  encrypt file\n");
-  fprintf(stdout, "sodium decrypt file:  decrypt file\n");
+  fprintf(stdout, "sodium decrypt file.enc:  decrypt file\n");
+  fprintf(stdout, "-v:  verbose mode\n");
 }
 
 void
 encrypt(char *source_file, unsigned char *key)
 {
-#define CHUNK_SIZE 4096
     unsigned char  buf_in[CHUNK_SIZE];
     char  *target_file;
     unsigned char  vim_header[VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN];
@@ -150,9 +162,6 @@ encrypt(char *source_file, unsigned char *key)
         memcpy(vheader.key + keylen , vheader.salt, VIM_KEY_LEN - keylen);
     }
 
-    dump_hex_buf("SALT: ", vheader.salt, VIM_SALT_LEN);
-    dump_hex_buf("SEED: ", vheader.seed, VIM_SEED_LEN);
-
     // fill vim_header buffer
     memcpy(vim_header, vheader.msg, VIM_HEADER_LEN);
     memcpy(vim_header + VIM_HEADER_LEN, vheader.salt, VIM_SALT_LEN);
@@ -163,8 +172,13 @@ encrypt(char *source_file, unsigned char *key)
     crypto_secretstream_xchacha20poly1305_init_push(&st, vheader.sod_header, vheader.key);
     memcpy(vim_header + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, vheader.sod_header, VIM_SOD_HEADER_LEN);
 
-    dump_hex_buf("SOD_H: ", (unsigned char *)vheader.sod_header, VIM_SOD_HEADER_LEN);
-    dump_hex_buf("Key: ", (unsigned char *)vheader.key, VIM_KEY_LEN);
+    if (verbose)
+    {
+      dump_hex_buf("SALT: ", vheader.salt, VIM_SALT_LEN);
+      dump_hex_buf("SEED: ", vheader.seed, VIM_SEED_LEN);
+      dump_hex_buf("SOD_H: ", (unsigned char *)vheader.sod_header, VIM_SOD_HEADER_LEN);
+      dump_hex_buf("Key: ", (unsigned char *)vheader.key, VIM_KEY_LEN);
+    }
     fwrite(vim_header, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN, fp_t);
 
     do {
@@ -214,6 +228,7 @@ main(int argc, char **argv)
   int doit = 0;
   char file[100] = "";
   char *key;
+
   // Init library
   if (sodium_init() < 0)
   {
@@ -222,8 +237,9 @@ main(int argc, char **argv)
   }
   for (int i = 1; i < argc; i++)
   {
-    //fprintf(stdout, "Parameters: %s\n", argv[i]);
-    if (strncmp("encrypt", argv[i], 7) == 0)
+    if (strncmp("-v", argv[i], 2) == 0)
+      verbose = 1;
+    else if (strncmp("encrypt", argv[i], 7) == 0)
       doit = 1;
     else if (strncmp("decrypt", argv[i], 7) == 0)
       doit = 2;
@@ -237,14 +253,19 @@ main(int argc, char **argv)
 
   if (doit == 1 && file[0] != NUL)
   {
-    fprintf(stdout, "Encrypting %s\n", file);
+    if (verbose)
+      fprintf(stdout, "Encrypting %s\n", file);
     encrypt(file, (unsigned char *)key);
   }
   else if (doit == 2 && file[0] != NUL)
   {
-    fprintf(stdout, "Decrypting %s\n", file);
+    if (verbose)
+      fprintf(stdout, "Decrypting %s\n", file);
     decrypt(file, (unsigned char *)key);
   }
   else
+  {
     fprintf(stdout, "No filename given!\n");
+    exit(1);
+  }
 }
