@@ -21,12 +21,11 @@ decrypt(char *file, unsigned char *key)
   unsigned long long out_len;
   int keylen;
   unsigned char buf[CHUNK_SIZE + crypto_secretstream_xchacha20poly1305_ABYTES];
-  unsigned char decrypted[CHUNK_SIZE];
+  unsigned char decrypted[CHUNK_SIZE + 1];  // final NUL
   struct VimHeader header;
   crypto_secretstream_xchacha20poly1305_state st;
   unsigned char tag;
   int cnt = 0;
-
 
   if ((fd = fopen(file, "r")) == NULL)
   {
@@ -70,10 +69,10 @@ decrypt(char *file, unsigned char *key)
   }
 
   do {
+    memset(decrypted, 0, sizeof(decrypted));
     rlen = fread(buf, 1, sizeof(buf), fd);
     eof = feof(fd);
     total += rlen;
-    memset(decrypted, 0, CHUNK_SIZE);
 
 		if (crypto_secretstream_xchacha20poly1305_pull(&st, decrypted, &out_len, &tag, buf, rlen, NULL, 0) != 0)
     {
