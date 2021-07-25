@@ -29,7 +29,7 @@ That means, you need to decrypt files with the name `<input>.enc`.
 #### Arguments:
 
 ```
--v		    -  be verbose
+-v        -  be verbose
 -b <nr>   -  Use <nr> as block size for encryption
 ```
 
