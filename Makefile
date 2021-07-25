@@ -1,9 +1,12 @@
 CFLAGS = -ggdb -O0 -DDEBUG -Wall -Wextra -Wshadow -Wmissing-prototypes -Wmaybe-uninitialized -Wno-cast-function-type -Wno-deprecated-declarations -Wno-missing-prototypes
 
-all: sodium
+all: vimcrypt
 
-sodium: sodium.c sodium.h
-	gcc $(CFLAGS) sodium.c -lsodium -o sodium
+vimcrypt: vimcrypt.c vimcrypt.h
+	gcc $(CFLAGS) vimcrypt.c -lsodium -o vimcrypt
 
-sodium_demo: sodium1.c
-	gcc $(CFLAGS) sodium1.c -lsodium -o sodium_demo
+sodium_demo: sodium.c
+	gcc $(CFLAGS) sodium.c -lsodium -o sodium_demo
+
+clean:
+	@rm -f vimcrypt sodium_demo
