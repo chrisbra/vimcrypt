@@ -4,6 +4,17 @@ static int verbose = 0;
 static int block_size = CHUNK_SIZE;
 
 void
+print_sodium_parameters(unsigned long long opslimit, size_t memlimit, int alg)
+{
+  if (verbose)
+  {
+    fprintf(stdout, "OPSLIMIT: \"%llu\"\n", opslimit);
+    fprintf(stdout, "MEMLIMIT: \"%lu\"\n", memlimit);
+    fprintf(stdout, "ALG: \"%d\"\n", alg);
+  }
+}
+
+void
 dump_hex_buf(char *prefix, unsigned char buf[], unsigned int len)
 {
     fprintf(stdout, prefix);
@@ -13,7 +24,7 @@ dump_hex_buf(char *prefix, unsigned char buf[], unsigned int len)
 }
 
 int
-decrypt(char *file, unsigned char *key)
+decrypt(char *file, unsigned char *key, vimcrypt_version_t crypt_v)
 {
   FILE *fd;
   int eof;
@@ -27,6 +38,11 @@ decrypt(char *file, unsigned char *key)
   unsigned char tag;
   int cnt = 0;
   int keylen = strlen((char *)key);
+  unsigned long long opslimit = crypto_pwhash_OPSLIMIT_INTERACTIVE;
+  size_t memlimit = crypto_pwhash_MEMLIMIT_INTERACTIVE;
+  int alg = crypto_pwhash_ALG_DEFAULT;
+  int add_size = 0; // old xchacha20 (no additional len)
+  int found_version;
 
   buf = (unsigned char *)malloc(block_size + crypto_secretstream_xchacha20poly1305_ABYTES); // encryption + MAC
   decrypted = (unsigned char *)malloc(block_size + 1); // message + NUL
@@ -41,8 +57,8 @@ decrypt(char *file, unsigned char *key)
     fprintf(stdout, "Error opening File \"%s\"\n", file);
     exit(1);
   }
-  rlen = fread(buf, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN, fd);
-  if (rlen !=  VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN + VIM_SOD_HEADER_LEN)
+  rlen = fread(buf, 1, VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, fd);
+  if (rlen !=  VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN)
   {
     fprintf(stdout, "Error reading input File: %s\n", file);
     exit(1);
@@ -52,12 +68,30 @@ decrypt(char *file, unsigned char *key)
   memcpy(vheader.msg, buf, VIM_HEADER_LEN);
   memcpy(vheader.salt, buf + VIM_HEADER_LEN, VIM_SALT_LEN);
   memcpy(vheader.seed, buf + VIM_HEADER_LEN + VIM_SALT_LEN, VIM_SEED_LEN);
-  memcpy(vheader.sod_header, buf + VIM_HEADER_LEN + VIM_SALT_LEN + VIM_SEED_LEN, VIM_SOD_HEADER_LEN);
+
+  found_version = (vheader.msg[10] - '3');
+  if (found_version != (int)crypt_v && verbose) 
+    fprintf(stdout, "Found Crypt-Version '%d' != arg-version '%d'\n", found_version, crypt_v);
+
+  if (found_version == xchacha20v2)
+    // read additional parameters: 20 bytes
+    add_size = sizeof(opslimit) + sizeof(memlimit) + sizeof(alg);
+
+  rlen = fread(buf, 1, add_size + VIM_SOD_HEADER_LEN, fd);
+
+  if (found_version == xchacha20v2)
+  {
+    memcpy(&opslimit, buf, sizeof(opslimit));
+    memcpy(&memlimit, buf + sizeof(opslimit), sizeof(memlimit));
+    memcpy(&alg, buf + sizeof(opslimit) + sizeof(memlimit), sizeof(alg));
+  }
+  print_sodium_parameters(opslimit, memlimit, alg);
+
+  memcpy(vheader.sod_header, buf + add_size, VIM_SOD_HEADER_LEN);
 
   // derive a key from the password
   if (crypto_pwhash(vheader.dkey, VIM_KEY_LEN, (const char *)key, keylen, vheader.salt,
-    crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE,
-    crypto_pwhash_ALG_DEFAULT) != 0)
+    opslimit, memlimit, alg) != 0)
   {
     fprintf(stdout, "Error deriving a key from password");
     exit(1);
@@ -66,9 +100,17 @@ decrypt(char *file, unsigned char *key)
   if (verbose)
   {
     fprintf(stdout, "Trying to decrypt file \"%s\" with key \"%s\"\n", file, key);
-    if (strncmp(VIM_HEADER, (char *)vheader.msg, VIM_HEADER_LEN) == 0)
-      fprintf(stdout, "Vim Crypt Header version '%c' found\n", vheader.msg[10]);
-    fprintf(stdout, "MSG: %.*s\n", VIM_HEADER_LEN,(char *)vheader.msg);
+    if (strncmp(VIM_HEADER1, (char *)vheader.msg, VIM_HEADER_LEN) == 0 ||
+        strncmp(VIM_HEADER2, (char *)vheader.msg, VIM_HEADER_LEN) == 0)
+    {
+      if (vheader.msg[10] == '4')
+        fprintf(stdout, "Found Vim Cryptmethod 'xchacha20'\n");
+      else
+        fprintf(stdout, "Found Vim Cryptmethod 'xchacha20v2'\n");
+    }
+    else
+        fprintf(stdout, "Found (unknown) Vim Cryptmethod '%s'\n", vheader.msg);
+
     dump_hex_buf("SALT: ", vheader.salt, VIM_SALT_LEN);
     dump_hex_buf("SEED: ", vheader.seed, VIM_SEED_LEN);
     dump_hex_buf("SOD_H: ", vheader.sod_header, VIM_SOD_HEADER_LEN);
@@ -125,7 +167,7 @@ decrypt(char *file, unsigned char *key)
 }
 
 void
-encrypt(char *source_file, unsigned char *key)
+encrypt(char *source_file, unsigned char *key, vimcrypt_version_t crypt_v)
 {
     unsigned char  *buf_in;
     char  *target_file;
@@ -138,6 +180,9 @@ encrypt(char *source_file, unsigned char *key)
     struct VimHeader vheader;
     int keylen = strlen((char *)key);
     unsigned long long out_len;
+    unsigned long long opslimit = crypto_pwhash_OPSLIMIT_INTERACTIVE;
+    size_t memlimit = crypto_pwhash_MEMLIMIT_INTERACTIVE;
+    int alg = crypto_pwhash_ALG_DEFAULT;
 
     buf_in = (unsigned char *)malloc(block_size);
     ciphertext = (unsigned char *)malloc(block_size + crypto_secretbox_MACBYTES); // message + NUL
@@ -155,8 +200,7 @@ encrypt(char *source_file, unsigned char *key)
 
     // derive a key from the password
     if (crypto_pwhash(vheader.dkey, VIM_KEY_LEN, (const char *)key, keylen, vheader.salt,
-      crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE,
-      crypto_pwhash_ALG_DEFAULT) != 0)
+      opslimit, memlimit, alg) != 0)
     {
       fprintf(stdout, "Error deriving a key from password");
       exit(1);
@@ -167,12 +211,16 @@ encrypt(char *source_file, unsigned char *key)
     target_file[file_name_len + 4] = NUL;
     
     // fill Vim Header
-    memcpy(vheader.msg, VIM_HEADER, VIM_HEADER_LEN);
+    if (crypt_v == xchacha20)
+      memcpy(vheader.msg, VIM_HEADER1, VIM_HEADER_LEN);
+    else
+      memcpy(vheader.msg, VIM_HEADER2, VIM_HEADER_LEN);
 
     fp_s = fopen(source_file, "rb");
     fp_t = fopen(target_file, "wb");
     crypto_secretstream_xchacha20poly1305_init_push(&st, vheader.sod_header, vheader.dkey);
 
+    print_sodium_parameters(opslimit, memlimit, alg);
     if (verbose)
     {
       dump_hex_buf("SALT: ", vheader.salt, VIM_SALT_LEN);
@@ -184,6 +232,14 @@ encrypt(char *source_file, unsigned char *key)
     fwrite(vheader.msg, 1, VIM_HEADER_LEN, fp_t);
     fwrite(vheader.salt, 1, VIM_SALT_LEN, fp_t);
     fwrite(vheader.seed, 1, VIM_SEED_LEN, fp_t);
+
+    if (crypt_v == xchacha20v2)
+    {
+      fwrite(&opslimit, 1, sizeof(opslimit), fp_t);
+      fwrite(&memlimit, 1, sizeof(memlimit), fp_t);
+      fwrite(&alg, 1, sizeof(alg), fp_t);
+    }
+
     fwrite(vheader.sod_header, 1, VIM_SOD_HEADER_LEN, fp_t);
 
     do {
@@ -208,12 +264,13 @@ print_help()
   fprintf(stdout, "\nvimcrypt\n");
   fprintf(stdout, "========\n");
   fprintf(stdout, "De- and Encrypting Vim Sodium encrypted files\n");
-  fprintf(stdout, "sodium [-v] [-b <blocksize>] encrypt|decrypt file\n");
+  fprintf(stdout, "sodium [-v] [-V <version>] [-b <blocksize>] encrypt|decrypt file\n");
   fprintf(stdout, "\n");
   fprintf(stdout, "sodium encrypt file:      encrypt file\n");
   fprintf(stdout, "sodium decrypt file.enc:  decrypt file.enc\n");
   fprintf(stdout, "-v:  verbose mode\n");
   fprintf(stdout, "-b <blocksize>:  use custom <block_size> (default: 8K)\n");
+  fprintf(stdout, "-V <version>:  use version 1 (xchacha20) or version 2 (xchacha20v2)\n");
   fprintf(stdout, "\n");
 }
 
@@ -251,6 +308,7 @@ main(int argc, char **argv)
   int doit = 0;
   char file[100] = "";
   char *key;
+  vimcrypt_version_t crypt_version = xchacha20v2; // default
 
   // Init library
   if (sodium_init() < 0)
@@ -264,6 +322,18 @@ main(int argc, char **argv)
       verbose = 1;
     else if (strncmp("-b", argv[i], 2) == 0)
       block_size = atoi(argv[++i]);
+    else if (strncmp("-V", argv[i], 2) == 0)
+    {
+      int j = atoi(argv[++i]);
+      if (j < xchacha20 || j > xchacha20v2)
+      {
+        fprintf(stdout, "Unknown Cryptmethod '%d'\n", j);
+        exit(2);
+      }
+      else
+        crypt_version = j;
+
+    }
     else if (strncmp("encrypt", argv[i], 7) == 0)
       doit = 1;
     else if (strncmp("decrypt", argv[i], 7) == 0)
@@ -271,6 +341,10 @@ main(int argc, char **argv)
     if (doit && ++i < argc && argv[i] != NUL)
       memcpy(file, argv[i], strlen(argv[i]));
   }
+
+  if (verbose)
+    fprintf(stdout, "Using Cryptmethod '%s'\n",
+        (crypt_version == xchacha20 ? (char *)"xchacha20" : (char *)"xchacha20v2"));
   if (!doit || file[0] == NUL)
   {
     print_help();
@@ -283,13 +357,13 @@ main(int argc, char **argv)
   {
     if (verbose)
       fprintf(stdout, "Encrypting %s\n", file);
-    encrypt(file, (unsigned char *)key);
+    encrypt(file, (unsigned char *)key, crypt_version);
   }
   else if (doit == 2 && file[0] != NUL)
   {
     if (verbose)
       fprintf(stdout, "Decrypting %s\n", file);
-    decrypt(file, (unsigned char *)key);
+    decrypt(file, (unsigned char *)key, crypt_version);
   }
   else
   {

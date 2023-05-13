@@ -9,10 +9,16 @@
 #define NUL 0x0
 #define UNUSED __attribute__((unused))
 
+typedef enum {
+  xchacha20 = 1,
+  xchacha20v2
+} vimcrypt_version_t;
+
 // default Block Size
 #define CHUNK_SIZE 8192
 
-#define VIM_HEADER "VimCrypt~04!"
+#define VIM_HEADER1 "VimCrypt~04!"
+#define VIM_HEADER2 "VimCrypt~05!"
 #define VIM_HEADER_LEN 12
 #define VIM_SALT_LEN 16
 #define VIM_SEED_LEN 8
