@@ -205,9 +205,8 @@ encrypt(char *source_file, unsigned char *key)
 void
 print_help()
 {
-  fprintf(stdout, "\nHELP\n");
   fprintf(stdout, "\nvimcrypt\n");
-  fprintf(stdout, "======\n");
+  fprintf(stdout, "========\n");
   fprintf(stdout, "De- and Encrypting Vim Sodium encrypted files\n");
   fprintf(stdout, "sodium [-v] [-b <blocksize>] encrypt|decrypt file\n");
   fprintf(stdout, "\n");
@@ -215,6 +214,7 @@ print_help()
   fprintf(stdout, "sodium decrypt file.enc:  decrypt file.enc\n");
   fprintf(stdout, "-v:  verbose mode\n");
   fprintf(stdout, "-b <blocksize>:  use custom <block_size> (default: 8K)\n");
+  fprintf(stdout, "\n");
 }
 
 
