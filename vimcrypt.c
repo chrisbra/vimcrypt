@@ -271,8 +271,11 @@ main(int argc, char **argv)
     if (doit && ++i < argc && argv[i] != NUL)
       memcpy(file, argv[i], strlen(argv[i]));
   }
-  if (!doit)
+  if (!doit || file[0] == NUL)
+  {
     print_help();
+    exit(1);
+  }
 
   key = get_key();
 
